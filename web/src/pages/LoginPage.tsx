@@ -1,13 +1,11 @@
 import { useState, type FormEvent } from 'react';
-import { Link, useLocation } from 'react-router';
+import { Link } from 'react-router';
+import { api } from '../api';
 import { useAuth } from '../auth';
 import { AuthLayout, ErrorMessage, Field, primaryButton } from '../components/ui';
 
 export function LoginPage() {
-  const { login } = useAuth();
-  const location = useLocation();
-  const justRegistered = (location.state as { registered?: boolean } | null)?.registered;
-
+  const { startSession } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -18,7 +16,7 @@ export function LoginPage() {
     setError('');
     setLoading(true);
     try {
-      await login(email, password);
+      startSession(await api.login({ email, password }));
     } catch (err) {
       setError((err as Error).message);
       setLoading(false);
@@ -26,11 +24,8 @@ export function LoginPage() {
   }
 
   return (
-    <AuthLayout title="Entrar" subtitle="Acompanhe seus gastos e ganhos sem planilhas.">
+    <AuthLayout title="Entrar" subtitle="Horas registradas com clareza para equipe, gestão e cliente.">
       <form onSubmit={handleSubmit} className="space-y-4">
-        {justRegistered && (
-          <p className="rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-700">Conta criada! Agora é só entrar.</p>
-        )}
         <Field label="E-mail" type="email" autoComplete="email" required value={email} onChange={(e) => setEmail(e.target.value)} />
         <Field label="Senha" type="password" autoComplete="current-password" required value={password} onChange={(e) => setPassword(e.target.value)} />
         <ErrorMessage>{error}</ErrorMessage>
@@ -39,9 +34,10 @@ export function LoginPage() {
         </button>
       </form>
       <p className="mt-6 text-center text-sm text-slate-500">
-        Ainda não tem conta?{' '}
-        <Link to="/cadastro" className="font-medium text-emerald-700 hover:underline">Cadastre-se</Link>
+        Quer usar o Optimik na sua empresa?{' '}
+        <Link to="/cadastro" className="font-medium text-blue-700 hover:underline">Crie uma conta</Link>
       </p>
+      <p className="mt-2 text-center text-xs text-slate-400">Recebeu um convite? Use o link que o gestor enviou.</p>
     </AuthLayout>
   );
 }

@@ -1,135 +1,263 @@
-// Testes da API cobrindo os critérios de aceite do PRD (US01 a US04).
+// Testes da etapa 1 do time sheet, cobrindo os critérios de aceite do PRD (US01 a US03)
+// e as regras de segurança do TDD (§5.2 e §5.6).
 // Cada teste usa um banco SQLite em memória, então nada é gravado em disco.
 import { beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import { createDatabase } from '../src/db.js';
-import { createApp } from '../src/app.js';
+import { bearer, createClient, inviteAndAccept, newApp, signupManager, type App } from './helpers.js';
 
-let app: ReturnType<typeof createApp>;
+let app: App;
 
 beforeEach(() => {
-  app = createApp(createDatabase(':memory:'), 'segredo-de-teste');
+  app = newApp();
 });
 
-async function registerAndLogin(email = 'ana@example.com') {
-  await request(app).post('/api/auth/register').send({ name: 'Ana', email, password: '123456' });
-  const res = await request(app).post('/api/auth/login').send({ email, password: '123456' });
-  return res.body.token as string;
-}
+describe('US01 - Conta e organização', () => {
+  it('cria organização, gestor e categorias padrão, já logado', async () => {
+    const res = await request(app)
+      .post('/api/auth/signup')
+      .send({ organizationName: 'Estúdio', name: 'Ana', email: 'ana@example.com', password: '123456' });
 
-async function categoryId(token: string, name: string) {
-  const res = await request(app).get('/api/categories').set('Authorization', `Bearer ${token}`);
-  return res.body.find((c: { name: string }) => c.name === name).id as number;
-}
+    expect(res.status).toBe(201);
+    expect(res.body.token.split('.')).toHaveLength(3);
+    expect(res.body.user).toMatchObject({ name: 'Ana', role: 'MANAGER', organizationName: 'Estúdio', clientId: null });
 
-describe('US01 - Autenticação', () => {
-  it('cadastra e faz login retornando um token JWT', async () => {
-    const reg = await request(app).post('/api/auth/register').send({ name: 'Ana', email: 'ana@example.com', password: '123456' });
-    expect(reg.status).toBe(201);
-    expect(reg.body.id).toBeTypeOf('number');
-
-    const login = await request(app).post('/api/auth/login').send({ email: 'ana@example.com', password: '123456' });
-    expect(login.status).toBe(200);
-    expect(login.body.token.split('.')).toHaveLength(3);
-    expect(login.body.user).toEqual({ id: reg.body.id, name: 'Ana', email: 'ana@example.com' });
+    const categories = await request(app).get('/api/categories').set(bearer(res.body.token));
+    expect(categories.body.map((c: { name: string }) => c.name)).toContain('Backend');
   });
 
   it('não permite e-mail duplicado', async () => {
-    await request(app).post('/api/auth/register').send({ name: 'Ana', email: 'ana@example.com', password: '123456' });
-    const dup = await request(app).post('/api/auth/register').send({ name: 'Outra', email: 'ANA@example.com', password: '654321' });
+    const body = { organizationName: 'X', name: 'Ana', email: 'ana@example.com', password: '123456' };
+    await request(app).post('/api/auth/signup').send(body);
+    const dup = await request(app).post('/api/auth/signup').send({ ...body, email: 'ANA@example.com' });
     expect(dup.status).toBe(409);
   });
 
-  it('rejeita senha incorreta', async () => {
-    await request(app).post('/api/auth/register').send({ name: 'Ana', email: 'ana@example.com', password: '123456' });
-    const login = await request(app).post('/api/auth/login').send({ email: 'ana@example.com', password: 'errada' });
-    expect(login.status).toBe(401);
+  it('faz login e rejeita senha errada', async () => {
+    await request(app)
+      .post('/api/auth/signup')
+      .send({ organizationName: 'X', name: 'Ana', email: 'ana@example.com', password: '123456' });
+
+    const ok = await request(app).post('/api/auth/login').send({ email: 'ana@example.com', password: '123456' });
+    expect(ok.status).toBe(200);
+    expect(ok.body.user.role).toBe('MANAGER');
+
+    const wrong = await request(app).post('/api/auth/login').send({ email: 'ana@example.com', password: 'errada' });
+    expect(wrong.status).toBe(401);
+  });
+
+  it('limita tentativas de login a 5 por minuto', async () => {
+    const attempt = () => request(app).post('/api/auth/login').send({ email: 'x@example.com', password: 'x' });
+    for (let i = 0; i < 5; i++) expect((await attempt()).status).toBe(401);
+    expect((await attempt()).status).toBe(429);
   });
 
   it('bloqueia rotas protegidas sem token', async () => {
-    const res = await request(app).get('/api/transactions?month=1&year=2026');
-    expect(res.status).toBe(401);
+    expect((await request(app).get('/api/projects')).status).toBe(401);
   });
 });
 
-describe('US02 - Lançamentos', () => {
-  it('cria, edita e exclui um lançamento', async () => {
-    const token = await registerAndLogin();
-    const auth = { Authorization: `Bearer ${token}` };
-    const food = await categoryId(token, 'Alimentação');
+describe('US02 - Convites', () => {
+  it('convida um desenvolvedor, que entra com o papel definido no convite', async () => {
+    const manager = await signupManager(app);
+    const invite = await request(app).post('/api/invites').set(bearer(manager.token)).send({ role: 'DEVELOPER' });
+    expect(invite.status).toBe(201);
+    const token = invite.body.url.split('/').pop();
 
-    const created = await request(app).post('/api/transactions').set(auth)
-      .send({ type: 'EXPENSE', amount: 45.9, category_id: food, description: 'Mercado', date: '2026-03-10' });
-    expect(created.status).toBe(201);
-    expect(created.body).toMatchObject({ type: 'EXPENSE', amount: 45.9, category_name: 'Alimentação' });
+    const info = await request(app).get(`/api/invites/${token}`);
+    expect(info.body).toMatchObject({ organizationName: 'Estúdio Teste', role: 'DEVELOPER' });
 
-    const updated = await request(app).put(`/api/transactions/${created.body.id}`).set(auth).send({ amount: 50 });
-    expect(updated.status).toBe(200);
-    expect(updated.body.amount).toBe(50);
-    expect(updated.body.description).toBe('Mercado');
-
-    const deleted = await request(app).delete(`/api/transactions/${created.body.id}`).set(auth);
-    expect(deleted.status).toBe(204);
+    // Mesmo tentando se passar por gestor, o papel vem do convite.
+    const accepted = await request(app)
+      .post(`/api/invites/${token}/accept`)
+      .send({ name: 'Dev', email: 'dev@example.com', password: '123456', role: 'MANAGER' });
+    expect(accepted.status).toBe(201);
+    expect(accepted.body.user).toMatchObject({ role: 'DEVELOPER', organizationId: manager.user.organizationId });
   });
 
-  it('exige valor estritamente positivo', async () => {
-    const token = await registerAndLogin();
-    for (const amount of [0, -10]) {
-      const res = await request(app).post('/api/transactions').set('Authorization', `Bearer ${token}`)
-        .send({ type: 'INCOME', amount, date: '2026-03-10' });
-      expect(res.status).toBe(400);
+  it('o link só pode ser usado uma vez', async () => {
+    const manager = await signupManager(app);
+    const invite = await request(app).post('/api/invites').set(bearer(manager.token)).send({ role: 'DEVELOPER' });
+    const token = invite.body.url.split('/').pop();
+
+    await request(app).post(`/api/invites/${token}/accept`).send({ name: 'A', email: 'a@example.com', password: '123456' });
+    const again = await request(app).post(`/api/invites/${token}/accept`).send({ name: 'B', email: 'b@example.com', password: '123456' });
+    expect(again.status).toBe(404);
+  });
+
+  it('o link expira em 7 dias', async () => {
+    const db = createDatabase(':memory:');
+    const { createApp } = await import('../src/app.js');
+    app = createApp(db, 'segredo-de-teste');
+
+    const manager = await signupManager(app);
+    const invite = await request(app).post('/api/invites').set(bearer(manager.token)).send({ role: 'DEVELOPER' });
+    const token = invite.body.url.split('/').pop();
+
+    const expires = new Date(invite.body.expiresAt).getTime() - Date.now();
+    expect(Math.round(expires / 86_400_000)).toBe(7);
+
+    db.prepare('UPDATE invites SET expires_at = ?').run(new Date(Date.now() - 1000).toISOString());
+    expect((await request(app).get(`/api/invites/${token}`)).status).toBe(404);
+  });
+
+  it('convite de cliente exige um cliente da própria organização', async () => {
+    const manager = await signupManager(app);
+    const other = await signupManager(app, 'Outra Org');
+    const otherClient = await createClient(app, other.token);
+
+    const missing = await request(app).post('/api/invites').set(bearer(manager.token)).send({ role: 'CLIENT' });
+    expect(missing.status).toBe(400);
+
+    const foreign = await request(app).post('/api/invites').set(bearer(manager.token)).send({ role: 'CLIENT', clientId: otherClient });
+    expect(foreign.status).toBe(400);
+  });
+
+  it('só o gestor pode convidar', async () => {
+    const manager = await signupManager(app);
+    const dev = await inviteAndAccept(app, manager.token, 'DEVELOPER');
+    const res = await request(app).post('/api/invites').set(bearer(dev.token)).send({ role: 'DEVELOPER' });
+    expect(res.status).toBe(403);
+  });
+});
+
+describe('US03 - Clientes e projetos', () => {
+  it('cria projeto com valor da hora e horas previstas', async () => {
+    const manager = await signupManager(app);
+    const clientId = await createClient(app, manager.token);
+
+    const res = await request(app)
+      .post('/api/projects')
+      .set(bearer(manager.token))
+      .send({ clientId, name: 'Site institucional', hourlyRate: 120.5, budgetHours: 100 });
+
+    expect(res.status).toBe(201);
+    expect(res.body).toMatchObject({ name: 'Site institucional', clientName: 'Cliente ACME', hourlyRate: 120.5, budgetHours: 100, status: 'ACTIVE', members: [] });
+  });
+
+  it('exige valor da hora maior que zero e cliente existente', async () => {
+    const manager = await signupManager(app);
+    const clientId = await createClient(app, manager.token);
+    const post = (body: object) => request(app).post('/api/projects').set(bearer(manager.token)).send(body);
+
+    expect((await post({ clientId, name: 'P', hourlyRate: 0 })).status).toBe(400);
+    expect((await post({ clientId: 9999, name: 'P', hourlyRate: 100 })).status).toBe(400);
+  });
+
+  it('cada papel vê só os projetos que lhe cabem', async () => {
+    const manager = await signupManager(app);
+    const acme = await createClient(app, manager.token, 'ACME');
+    const beta = await createClient(app, manager.token, 'Beta');
+    const newProject = async (clientId: number, name: string) =>
+      (await request(app).post('/api/projects').set(bearer(manager.token)).send({ clientId, name, hourlyRate: 100 })).body.id;
+
+    const acmeProject = await newProject(acme, 'Projeto ACME');
+    await newProject(beta, 'Projeto Beta');
+
+    const dev = await inviteAndAccept(app, manager.token, 'DEVELOPER');
+    const acmeUser = await inviteAndAccept(app, manager.token, 'CLIENT', acme);
+
+    await request(app).put(`/api/projects/${acmeProject}/members`).set(bearer(manager.token)).send({ userIds: [dev.user.id] });
+
+    const names = async (token: string) => (await request(app).get('/api/projects').set(bearer(token))).body.map((p: { name: string }) => p.name);
+    expect(await names(manager.token)).toHaveLength(2);
+    expect(await names(dev.token)).toEqual(['Projeto ACME']);
+    expect(await names(acmeUser.token)).toEqual(['Projeto ACME']);
+  });
+
+  it('esconde o valor da hora do dev, a não ser que o gestor libere', async () => {
+    const manager = await signupManager(app);
+    const clientId = await createClient(app, manager.token);
+    const project = (await request(app).post('/api/projects').set(bearer(manager.token)).send({ clientId, name: 'P', hourlyRate: 100 })).body;
+    const dev = await inviteAndAccept(app, manager.token, 'DEVELOPER');
+    await request(app).put(`/api/projects/${project.id}/members`).set(bearer(manager.token)).send({ userIds: [dev.user.id] });
+
+    const devView = async () => (await request(app).get('/api/projects').set(bearer(dev.token))).body[0];
+    expect((await devView()).hourlyRate).toBeNull();
+    expect((await devView()).members).toBeUndefined();
+
+    await request(app).put(`/api/projects/${project.id}`).set(bearer(manager.token)).send({ clientId, name: 'P', hourlyRate: 100, showValuesToDevs: true });
+    expect((await devView()).hourlyRate).toBe(100);
+  });
+
+  it('só aloca devs e gestores ativos da própria organização', async () => {
+    const manager = await signupManager(app);
+    const clientId = await createClient(app, manager.token);
+    const project = (await request(app).post('/api/projects').set(bearer(manager.token)).send({ clientId, name: 'P', hourlyRate: 100 })).body;
+    const clientUser = await inviteAndAccept(app, manager.token, 'CLIENT', clientId);
+    const outsider = await signupManager(app, 'Outra Org');
+
+    const assign = (userIds: number[]) =>
+      request(app).put(`/api/projects/${project.id}/members`).set(bearer(manager.token)).send({ userIds });
+
+    expect((await assign([clientUser.user.id])).status).toBe(400);
+    expect((await assign([outsider.user.id])).status).toBe(400);
+    expect((await assign([manager.user.id])).status).toBe(200);
+  });
+
+  it('isola clientes e projetos entre organizações', async () => {
+    const a = await signupManager(app, 'Org A');
+    const b = await signupManager(app, 'Org B');
+    const clientA = await createClient(app, a.token);
+    const projectA = (await request(app).post('/api/projects').set(bearer(a.token)).send({ clientId: clientA, name: 'P', hourlyRate: 100 })).body;
+
+    expect((await request(app).get('/api/clients').set(bearer(b.token))).body).toEqual([]);
+    expect((await request(app).put(`/api/clients/${clientA}`).set(bearer(b.token)).send({ name: 'Hack' })).status).toBe(404);
+    expect((await request(app).put(`/api/projects/${projectA.id}`).set(bearer(b.token)).send({ clientId: clientA, name: 'Hack', hourlyRate: 1 })).status).toBe(404);
+  });
+
+  it('dev e cliente não acessam clientes nem equipe', async () => {
+    const manager = await signupManager(app);
+    const clientId = await createClient(app, manager.token);
+    const dev = await inviteAndAccept(app, manager.token, 'DEVELOPER');
+    const clientUser = await inviteAndAccept(app, manager.token, 'CLIENT', clientId);
+
+    for (const token of [dev.token, clientUser.token]) {
+      expect((await request(app).get('/api/clients').set(bearer(token))).status).toBe(403);
+      expect((await request(app).get('/api/users').set(bearer(token))).status).toBe(403);
     }
-  });
-
-  it('rejeita categoria de tipo diferente do lançamento', async () => {
-    const token = await registerAndLogin();
-    const salary = await categoryId(token, 'Salário');
-    const res = await request(app).post('/api/transactions').set('Authorization', `Bearer ${token}`)
-      .send({ type: 'EXPENSE', amount: 10, category_id: salary, date: '2026-03-10' });
-    expect(res.status).toBe(400);
-  });
-
-  it('isola os dados entre usuários', async () => {
-    const ana = await registerAndLogin('ana@example.com');
-    const bob = await registerAndLogin('bob@example.com');
-
-    const created = await request(app).post('/api/transactions').set('Authorization', `Bearer ${ana}`)
-      .send({ type: 'INCOME', amount: 100, date: '2026-03-10' });
-
-    const bobAuth = { Authorization: `Bearer ${bob}` };
-    expect((await request(app).get('/api/transactions?month=3&year=2026').set(bobAuth)).body).toEqual([]);
-    expect((await request(app).put(`/api/transactions/${created.body.id}`).set(bobAuth).send({ amount: 1 })).status).toBe(404);
-    expect((await request(app).delete(`/api/transactions/${created.body.id}`).set(bobAuth)).status).toBe(404);
+    expect((await request(app).get('/api/categories').set(bearer(clientUser.token))).status).toBe(403);
   });
 });
 
-describe('US03/US04 - Resumo e filtro por mês', () => {
-  it('filtra por mês e calcula receitas, despesas e saldo', async () => {
-    const token = await registerAndLogin();
-    const auth = { Authorization: `Bearer ${token}` };
-    const food = await categoryId(token, 'Alimentação');
+describe('Equipe', () => {
+  it('usuário desativado perde o acesso na hora, mesmo com token válido', async () => {
+    const manager = await signupManager(app);
+    const dev = await inviteAndAccept(app, manager.token, 'DEVELOPER');
+    expect((await request(app).get('/api/projects').set(bearer(dev.token))).status).toBe(200);
 
-    const post = (body: object) => request(app).post('/api/transactions').set(auth).send(body);
-    await post({ type: 'INCOME', amount: 0.1, date: '2026-03-01' });
-    await post({ type: 'INCOME', amount: 0.2, date: '2026-03-31' });
-    await post({ type: 'EXPENSE', amount: 1, category_id: food, date: '2026-03-15' });
-    await post({ type: 'EXPENSE', amount: 999, date: '2026-04-01' }); // outro mês
-
-    const list = await request(app).get('/api/transactions?month=3&year=2026').set(auth);
-    expect(list.body.map((t: { date: string }) => t.date)).toEqual(['2026-03-31', '2026-03-15', '2026-03-01']);
-
-    const summary = await request(app).get('/api/dashboard/summary?month=3&year=2026').set(auth);
-    expect(summary.body).toEqual({
-      totalIncome: 0.3,
-      totalExpense: 1,
-      balance: -0.7,
-      expensesByCategory: [{ category: 'Alimentação', total: 1 }],
-    });
+    await request(app).patch(`/api/users/${dev.user.id}`).set(bearer(manager.token)).send({ active: false });
+    expect((await request(app).get('/api/projects').set(bearer(dev.token))).status).toBe(401);
   });
 
-  it('valida mês e ano', async () => {
-    const token = await registerAndLogin();
-    const res = await request(app).get('/api/dashboard/summary?month=13&year=2026').set('Authorization', `Bearer ${token}`);
+  it('gestor não pode desativar a si mesmo', async () => {
+    const manager = await signupManager(app);
+    const res = await request(app).patch(`/api/users/${manager.user.id}`).set(bearer(manager.token)).send({ active: false });
     expect(res.status).toBe(400);
+  });
+});
+
+describe('Migração do banco', () => {
+  it('converte um banco da v1 (finanças) sem erro', async () => {
+    const { DatabaseSync } = await import('node:sqlite');
+    const { mkdtempSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    const { tmpdir } = await import('node:os');
+    const path = join(mkdtempSync(join(tmpdir(), 'optimik-')), 'v1.db');
+
+    const v1 = new DatabaseSync(path);
+    v1.exec(`
+      CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, email TEXT, password_hash TEXT);
+      CREATE TABLE categories (id INTEGER PRIMARY KEY, name TEXT, type TEXT);
+      CREATE TABLE transactions (id INTEGER PRIMARY KEY, user_id INTEGER REFERENCES users(id));
+      INSERT INTO users VALUES (1, 'Antigo', 'antigo@example.com', 'x');
+    `);
+    v1.close();
+
+    const db = createDatabase(path);
+    const tables = db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table'`).all().map((t) => (t as { name: string }).name);
+    expect(tables).toContain('organizations');
+    expect(tables).not.toContain('transactions');
+    db.close();
   });
 });
