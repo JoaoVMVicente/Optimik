@@ -2,7 +2,9 @@
 
 Organizador de gastos e entradas de dinheiro, sem planilhas gigantescas.
 
-MVP construído a partir de [`docs/PRD.docx`](docs/PRD.docx) e [`docs/TDD.docx`](docs/TDD.docx).
+> 🔄 **Em transição:** o Optimik está virando um **time sheet** para gestão, cliente e desenvolvedor.
+> A nova especificação está em [`docs/PRD.md`](docs/PRD.md) e [`docs/TDD.md`](docs/TDD.md).
+> O código abaixo ainda é o MVP v1 (finanças pessoais), especificado em [`docs/v1-financas/`](docs/v1-financas/).
 
 ## O que tem no MVP
 
