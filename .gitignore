@@ -1,0 +1,16 @@
+node_modules/
+dist/
+
+# Variáveis de ambiente (podem conter segredos)
+.env
+
+# Banco de dados local
+server/data/
+*.db
+*.db-journal
+
+# Configurações locais de ferramentas
+.claude/
+
+# Arquivos temporários do Word
+~$*

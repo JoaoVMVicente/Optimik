@@ -1,0 +1,41 @@
+# Verificação automática: roda em todo Pull Request e em todo push na main.
+# A regra da branch main exige que o job "verificar" passe antes do merge.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  verificar:
+    name: verificar
+    runs-on: ubuntu-latest
+    steps:
+      - name: Baixar o código
+        uses: actions/checkout@v4
+
+      - name: Instalar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            server/package-lock.json
+            web/package-lock.json
+
+      - name: Instalar dependências
+        run: |
+          npm ci
+          npm ci --prefix server
+          npm ci --prefix web
+
+      - name: Checar tipos do backend
+        run: npm run typecheck --prefix server
+
+      - name: Testes do backend
+        run: npm test --prefix server
+
+      - name: Build (backend + frontend)
+        run: npm run build
