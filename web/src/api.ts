@@ -1,35 +1,62 @@
 // Tudo que conversa com o backend fica aqui.
 // O token JWT é salvo no localStorage e enviado em todas as requisições.
 
-export type TransactionType = 'INCOME' | 'EXPENSE';
+export type Role = 'MANAGER' | 'DEVELOPER' | 'CLIENT';
 
-export type User = { id: number; name: string; email: string };
-
-export type Category = { id: number; name: string; type: TransactionType };
-
-export type Transaction = {
+export type User = {
   id: number;
-  type: TransactionType;
-  amount: number;
-  category_id: number | null;
-  category_name: string | null;
-  description: string | null;
-  date: string;
+  name: string;
+  email: string;
+  role: Role;
+  organizationId: number;
+  organizationName: string;
+  clientId: number | null;
 };
 
-export type TransactionInput = {
-  type: TransactionType;
-  amount: number;
-  category_id: number | null;
-  description: string;
-  date: string;
+export type Session = { token: string; user: User };
+
+export type TeamMember = {
+  id: number;
+  name: string;
+  email: string;
+  role: Role;
+  clientId: number | null;
+  clientName: string | null;
+  active: boolean;
 };
 
-export type Summary = {
-  totalIncome: number;
-  totalExpense: number;
-  balance: number;
-  expensesByCategory: Array<{ category: string; total: number }>;
+export type Client = { id: number; name: string; contactEmail: string | null; activeProjects: number };
+export type ClientInput = { name: string; contactEmail: string | null };
+
+export type Project = {
+  id: number;
+  clientId: number;
+  clientName: string;
+  name: string;
+  hourlyRate: number | null; // null quando o dev não pode ver valores
+  budgetHours: number | null;
+  showValuesToDevs: boolean;
+  status: 'ACTIVE' | 'ARCHIVED';
+  members?: Array<{ id: number; name: string }>; // só para o gestor
+};
+
+export type ProjectInput = {
+  clientId: number;
+  name: string;
+  hourlyRate: number;
+  budgetHours: number | null;
+  showValuesToDevs: boolean;
+  status: 'ACTIVE' | 'ARCHIVED';
+};
+
+export type Category = { id: number; name: string };
+
+export type InviteInfo = {
+  organizationName: string;
+  role: Role;
+  clientName: string | null;
+  email: string | null;
+  expiresAt: string;
 };
 
 const TOKEN_KEY = 'optimik:token';
@@ -40,9 +67,11 @@ export const tokenStorage = {
   clear: () => localStorage.removeItem(TOKEN_KEY),
 };
 
-// Chamado quando o token expira, para o app voltar à tela de login.
+// Chamado quando o token expira ou o acesso é desativado, para o app voltar à tela de login.
 let onUnauthorized = () => {};
-export const setUnauthorizedHandler = (fn: () => void) => (onUnauthorized = fn);
+export function setUnauthorizedHandler(fn: () => void) {
+  onUnauthorized = fn;
+}
 
 async function request<T>(path: string, options: { method?: string; body?: unknown } = {}): Promise<T> {
   const token = tokenStorage.get();
@@ -65,21 +94,32 @@ async function request<T>(path: string, options: { method?: string; body?: unkno
   return data as T;
 }
 
-const monthQuery = (month: number, year: number) => `?month=${month}&year=${year}`;
-
 export const api = {
-  register: (body: { name: string; email: string; password: string }) =>
-    request<{ id: number }>('/auth/register', { method: 'POST', body }),
-  login: (body: { email: string; password: string }) =>
-    request<{ token: string; user: User }>('/auth/login', { method: 'POST', body }),
+  signup: (body: { organizationName: string; name: string; email: string; password: string }) =>
+    request<Session>('/auth/signup', { method: 'POST', body }),
+  login: (body: { email: string; password: string }) => request<Session>('/auth/login', { method: 'POST', body }),
+  me: () => request<User>('/auth/me'),
+
+  createInvite: (body: { role: Role; clientId?: number; email?: string }) =>
+    request<{ url: string; expiresAt: string }>('/invites', { method: 'POST', body }),
+  inviteInfo: (token: string) => request<InviteInfo>(`/invites/${token}`),
+  acceptInvite: (token: string, body: { name: string; email: string; password: string }) =>
+    request<Session>(`/invites/${token}/accept`, { method: 'POST', body }),
+
+  team: () => request<TeamMember[]>('/users'),
+  setActive: (id: number, active: boolean) => request<TeamMember>(`/users/${id}`, { method: 'PATCH', body: { active } }),
+
+  clients: () => request<Client[]>('/clients'),
+  createClient: (body: ClientInput) => request<Client>('/clients', { method: 'POST', body }),
+  updateClient: (id: number, body: ClientInput) => request<Client>(`/clients/${id}`, { method: 'PUT', body }),
+
+  projects: () => request<Project[]>('/projects'),
+  createProject: (body: ProjectInput) => request<Project>('/projects', { method: 'POST', body }),
+  updateProject: (id: number, body: ProjectInput) => request<Project>(`/projects/${id}`, { method: 'PUT', body }),
+  setMembers: (id: number, userIds: number[]) =>
+    request<Project>(`/projects/${id}/members`, { method: 'PUT', body: { userIds } }),
 
   categories: () => request<Category[]>('/categories'),
-
-  transactions: (month: number, year: number) => request<Transaction[]>(`/transactions${monthQuery(month, year)}`),
-  createTransaction: (body: TransactionInput) => request<Transaction>('/transactions', { method: 'POST', body }),
-  updateTransaction: (id: number, body: TransactionInput) =>
-    request<Transaction>(`/transactions/${id}`, { method: 'PUT', body }),
-  deleteTransaction: (id: number) => request<void>(`/transactions/${id}`, { method: 'DELETE' }),
-
-  summary: (month: number, year: number) => request<Summary>(`/dashboard/summary${monthQuery(month, year)}`),
+  createCategory: (name: string) => request<Category>('/categories', { method: 'POST', body: { name } }),
+  updateCategory: (id: number, name: string) => request<Category>(`/categories/${id}`, { method: 'PUT', body: { name } }),
 };

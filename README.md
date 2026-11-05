@@ -1,22 +1,33 @@
 # Optimik
 
-Organizador de gastos e entradas de dinheiro, sem planilhas gigantescas.
+Time sheet que registra horas de trabalho com clareza para **gestão, cliente e desenvolvedor**.
 
-> 🔄 **Em transição:** o Optimik está virando um **time sheet** para gestão, cliente e desenvolvedor.
-> A nova especificação está em [`docs/PRD.md`](docs/PRD.md) e [`docs/TDD.md`](docs/TDD.md).
-> O código abaixo ainda é o MVP v1 (finanças pessoais), especificado em [`docs/v1-financas/`](docs/v1-financas/).
+A especificação está em [`docs/PRD.md`](docs/PRD.md) (o quê) e [`docs/TDD.md`](docs/TDD.md) (como).
+A versão anterior do projeto, um organizador financeiro pessoal, está documentada em [`docs/v1-financas/`](docs/v1-financas/).
 
-## O que tem no MVP
+## Andamento
 
-- **Cadastro e login** com senha criptografada (bcrypt) e token JWT (US01)
-- **Lançamentos**: criar, editar e excluir receitas e despesas (US02)
-- **Resumo do mês**: total de receitas, despesas e saldo (verde = positivo, vermelho = negativo) (US03)
-- **Filtro por mês/ano** que atualiza a lista e os cards sem recarregar a página (US04)
-- **Gastos por categoria**, para ver para onde o dinheiro está indo
+| Etapa | Entrega | Status |
+| ----- | ------- | ------ |
+| 1 | Organização, papéis, convites, clientes, projetos, categorias | ✅ |
+| 2 | Cronômetro, tela "qual projeto?", lançamento manual | ⏳ |
+| 3 | Envio, aprovação em duas etapas, histórico | ⏳ |
+| 4 | Comentários e notificações | ⏳ |
+| 5 | Painéis por papel, faturamento e CSV | ⏳ |
+| 6 | PWA instalável e inicialização com o Windows | ⏳ |
+
+### O que já funciona (etapa 1)
+
+- **Criar conta**: quem se cadastra cria a organização e vira **gestor** (US01)
+- **Convites por link** para desenvolvedores, clientes e outros gestores; o link vale 7 dias e funciona uma vez (US02)
+- **Clientes e projetos** com valor da hora, horas previstas e equipe alocada (US03)
+- **Cada papel vê só o que lhe cabe**: o dev vê os projetos em que está e não vê o valor da hora (a não ser que o gestor libere); o cliente vê só os projetos dele
+- **Equipe**: o gestor desativa e reativa acessos (quem é desativado perde o acesso na hora)
+- **Categorias de tarefa** editáveis (Backend, Frontend, Banco de Dados, Documentação, Reunião)
 
 ## Como rodar
 
-Pré-requisito: [Node.js](https://nodejs.org) **22.5 ou mais novo** (o projeto usa o SQLite que já vem no Node).
+Pré-requisito: [Node.js](https://nodejs.org) **24 ou mais novo** (o projeto usa o SQLite que já vem no Node).
 
 ```bash
 # 1. Instala as dependências (só na primeira vez)
@@ -26,7 +37,8 @@ npm run setup
 npm run dev
 ```
 
-Abra **http://localhost:5173**, crie uma conta e comece a lançar.
+Abra **http://localhost:5173** e crie uma conta. Para testar outros papéis, gere um convite em
+**Equipe**, saia da conta e abra o link do convite.
 
 Para rodar os testes automáticos da API: `npm test`.
 
@@ -71,42 +83,48 @@ Optimik/
 │   ├── src/
 │   │   ├── server.ts      # Ponto de entrada (sobe a API na porta 3333)
 │   │   ├── app.ts         # Monta o Express e registra as rotas
-│   │   ├── db.ts          # Conexão SQLite, criação das tabelas e categorias padrão
-│   │   ├── validation.ts  # Regras de validação (valor > 0, datas, mês/ano)
-│   │   ├── middleware/
-│   │   │   └── auth.ts    # Protege rotas exigindo o token JWT
-│   │   └── routes/        # auth, categories, transactions, dashboard
+│   │   ├── db.ts          # Conexão SQLite e migrações (evolução do banco)
+│   │   ├── session.ts     # Gera o token JWT de quem entra
+│   │   ├── validation.ts  # Regras de validação compartilhadas
+│   │   ├── middleware/    # Login obrigatório, papéis e limite de tentativas
+│   │   └── routes/        # auth, invites, users, clients, projects, categories
 │   └── tests/             # Testes dos critérios de aceite
 └── web/                   # Frontend: React + TypeScript + Tailwind CSS
     └── src/
-        ├── main.tsx       # Rotas das páginas (login, cadastro, painel)
+        ├── main.tsx       # Rotas das páginas e quem pode abrir cada uma
         ├── api.ts         # Todas as chamadas ao backend
         ├── auth.tsx       # Quem está logado (login/logout)
         ├── pages/         # Telas
-        └── components/    # Pedaços reutilizáveis das telas
+        └── components/    # Menu lateral e peças reutilizáveis
 ```
 
 ## API
 
-Todas as rotas, exceto `/api/auth/*`, exigem o cabeçalho `Authorization: Bearer <token>`.
+Exceto as rotas públicas, todas exigem o cabeçalho `Authorization: Bearer <token>`.
+A lista completa planejada (todas as etapas) está no [TDD, seção 4](docs/TDD.md#4-api-rest).
 
-| Método | Rota | Descrição |
-| ------ | ---- | --------- |
-| POST | `/api/auth/register` | `{ name, email, password }` → `{ id, message }` |
-| POST | `/api/auth/login` | `{ email, password }` → `{ token, user }` |
-| GET | `/api/categories` | Lista as categorias (receita e despesa) |
-| GET | `/api/transactions?month=MM&year=YYYY` | Lançamentos do mês, mais recentes primeiro |
-| POST | `/api/transactions` | `{ type, amount, category_id, description, date }` |
-| PUT | `/api/transactions/:id` | Atualiza (pode mandar só os campos alterados) |
-| DELETE | `/api/transactions/:id` | Exclui |
-| GET | `/api/dashboard/summary?month=MM&year=YYYY` | `{ totalIncome, totalExpense, balance, expensesByCategory }` |
+| Método | Rota | Quem | Descrição |
+| ------ | ---- | ---- | --------- |
+| POST | `/api/auth/signup` | pública | Cria organização + gestor e já devolve `{ token, user }` |
+| POST | `/api/auth/login` | pública | `{ email, password }` → `{ token, user }` (máx. 5 tentativas/min) |
+| GET | `/api/auth/me` | todos | Usuário logado |
+| POST | `/api/invites` | gestor | `{ role, clientId?, email? }` → `{ url, expiresAt }` |
+| GET | `/api/invites/:token` | pública | Dados do convite |
+| POST | `/api/invites/:token/accept` | pública | `{ name, email, password }` → `{ token, user }` |
+| GET / PATCH | `/api/users`, `/api/users/:id` | gestor | Equipe; `{ active }` ativa/desativa |
+| GET / POST / PUT | `/api/clients`, `/api/clients/:id` | gestor | Clientes |
+| GET | `/api/projects` | todos | Projetos visíveis para o papel de quem pede |
+| POST / PUT | `/api/projects`, `/api/projects/:id` | gestor | `{ clientId, name, hourlyRate, budgetHours?, showValuesToDevs?, status? }` |
+| PUT | `/api/projects/:id/members` | gestor | `{ userIds }` define quem está alocado |
+| GET | `/api/categories` | gestor, dev | Categorias de tarefa |
+| POST / PUT | `/api/categories`, `/api/categories/:id` | gestor | `{ name }` |
 
-## Decisões que vão além do TDD
+## Decisões técnicas
 
-- **Valores guardados em centavos** (inteiro) no banco. Números decimais no computador
-  têm erros de arredondamento (`0.1 + 0.2 = 0.30000000000000004`); com centavos a conta
-  sempre fecha. A API continua recebendo e devolvendo reais.
-- **Rota `GET /api/categories`**: o formulário precisa saber quais categorias existem.
-  As categorias padrão são criadas automaticamente na primeira execução.
-- **Categoria precisa combinar com o tipo**: não dá para lançar uma despesa como "Salário".
-- **`expensesByCategory` no resumo**: atende o item "distribuição dos gastos" do PRD.
+- **Valores em centavos** (inteiro) no banco: números decimais no computador têm erros de
+  arredondamento (`0.1 + 0.2 = 0.30000000000000004`). A API recebe e devolve reais.
+- **Migrações numeradas** em `server/src/db.ts`: cada mudança no banco é um passo novo, aplicado uma
+  única vez. Um banco da v1 é convertido automaticamente.
+- **Convites guardam só o hash do token**: nem quem acessa o banco consegue usar os links.
+- **O papel é relido do banco a cada requisição**: desativar alguém tem efeito imediato.
+- **Acesso negado a algo de outra organização responde 404**, para não revelar que o item existe.

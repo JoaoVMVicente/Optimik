@@ -1,12 +1,13 @@
 // Guarda quem está logado e disponibiliza login/logout para todo o app (React Context).
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react';
-import { api, setUnauthorizedHandler, tokenStorage, type User } from './api';
+import { api, setUnauthorizedHandler, tokenStorage, type Session, type User } from './api';
 
 const USER_KEY = 'optimik:user';
 
 type AuthContextValue = {
   user: User | null;
-  login: (email: string, password: string) => Promise<void>;
+  // Recebe uma sessão vinda do login, do cadastro ou do aceite de convite.
+  startSession: (session: Session) => void;
   logout: () => void;
 };
 
@@ -30,16 +31,31 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(null);
   }, []);
 
-  useEffect(() => setUnauthorizedHandler(logout), [logout]);
-
-  const login = async (email: string, password: string) => {
-    const { token, user } = await api.login({ email, password });
+  const startSession = useCallback(({ token, user }: Session) => {
     tokenStorage.set(token);
     localStorage.setItem(USER_KEY, JSON.stringify(user));
     setUser(user);
-  };
+  }, []);
 
-  return <AuthContext.Provider value={{ user, login, logout }}>{children}</AuthContext.Provider>;
+  // Atenção às chaves: se o efeito devolvesse uma função, o React a rodaria como "faxina"
+  // ao desmontar (e o StrictMode desmonta de propósito em desenvolvimento), deslogando o usuário.
+  useEffect(() => {
+    setUnauthorizedHandler(logout);
+  }, [logout]);
+
+  // Ao abrir o app, confirma no servidor se o usuário continua ativo e com o mesmo papel.
+  useEffect(() => {
+    if (!tokenStorage.get()) return;
+    api
+      .me()
+      .then((fresh) => {
+        localStorage.setItem(USER_KEY, JSON.stringify(fresh));
+        setUser(fresh);
+      })
+      .catch(() => {});
+  }, []);
+
+  return <AuthContext.Provider value={{ user, startSession, logout }}>{children}</AuthContext.Provider>;
 }
 
 export function useAuth() {
